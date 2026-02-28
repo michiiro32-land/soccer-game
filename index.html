@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>⚽ 2人サッカーゲーム</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #1a1a2e;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      font-family: 'Segoe UI', sans-serif;
+      color: #fff;
+      user-select: none;
+    }
+    h1 {
+      font-size: 2rem;
+      margin-bottom: 10px;
+      text-shadow: 0 0 20px #00ff88;
+      letter-spacing: 2px;
+    }
+    .controls-hint {
+      display: flex;
+      gap: 60px;
+      margin-bottom: 12px;
+      font-size: 0.85rem;
+      color: #aaa;
+    }
+    .controls-hint span { text-align: center; }
+    .controls-hint .p1 { color: #4fc3f7; }
+    .controls-hint .p2 { color: #ef9a9a; }
+    canvas {
+      border-radius: 12px;
+      box-shadow: 0 0 40px rgba(0,255,136,0.3);
+      display: block;
+    }
+    .score-board {
+      display: flex;
+      align-items: center;
+      gap: 30px;
+      margin-bottom: 10px;
+      font-size: 1.4rem;
+      font-weight: bold;
+    }
+    .score-board .p1-score { color: #4fc3f7; font-size: 2.5rem; }
+    .score-board .p2-score { color: #ef9a9a; font-size: 2.5rem; }
+    .score-board .vs { color: #888; font-size: 1rem; }
+    #restart-btn {
+      margin-top: 14px;
+      padding: 10px 30px;
+      background: #00ff88;
+      color: #1a1a2e;
+      border: none;
+      border-radius: 25px;
+      font-size: 1rem;
+      font-weight: bold;
+      cursor: pointer;
+      display: none;
+      transition: transform 0.1s;
+    }
+    #restart-btn:hover { transform: scale(1.05); }
+  </style>
+</head>
+<body>
+  <h1>⚽ 2人サッカー</h1>
+  <div class="controls-hint">
+    <span class="p1">🔵 P1: WASD</span>
+    <span class="p2">P2: ↑↓←→ 🔴</span>
+  </div>
+  <div class="score-board">
+    <span class="p1-score" id="s1">0</span>
+    <span class="vs">VS</span>
+    <span class="p2-score" id="s2">0</span>
+  </div>
+  <canvas id="c"></canvas>
+  <button id="restart-btn" onclick="restartGame()">🔄 もう一度</button>
+
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+
+// ── サイズ ──
+const W = 800, H = 500;
+canvas.width = W;
+canvas.height = H;
+
+// ── ゴール設定 ──
+const GOAL_W = 12;
+const GOAL_H = 130;
+const GOAL_Y = (H - GOAL_H) / 2;
+
+// ── プレイヤー設定 ──
+const P_R = 20;
+const P_SPEED = 4.5;
+const BALL_R = 14;
+const WIN_SCORE = 5;
+
+// ── 状態 ──
+let keys = {};
+let score = [0, 0];
+let goalAnim = 0;    // フレーム数
+let goalTeam = -1;
+let gameOver = false;
+let winner = -1;
+let lastGoalTime = 0;
+const GOAL_PAUSE = 90; // フレーム
+
+let p1, p2, ball;
+
+function resetPositions() {
+  p1   = { x: 200, y: H/2, vx: 0, vy: 0, color: '#4fc3f7', shadow: '#0288d1' };
+  p2   = { x: W-200, y: H/2, vx: 0, vy: 0, color: '#ef9a9a', shadow: '#c62828' };
+  ball = { x: W/2, y: H/2, vx: 0, vy: 0 };
+  goalAnim = 0;
+}
+
+function restartGame() {
+  score = [0, 0];
+  gameOver = false;
+  winner = -1;
+  document.getElementById('s1').textContent = '0';
+  document.getElementById('s2').textContent = '0';
+  document.getElementById('restart-btn').style.display = 'none';
+  resetPositions();
+  // give ball random kick
+  ball.vx = (Math.random() > 0.5 ? 1 : -1) * 3;
+  ball.vy = (Math.random() - 0.5) * 3;
+}
+
+resetPositions();
+// initial kick
+ball.vx = 3; ball.vy = -1;
+
+// ── 入力 ──
+window.addEventListener('keydown', e => {
+  keys[e.key] = true;
+  // スペースでスタート/リスタート
+  if (e.key === ' ' && gameOver) restartGame();
+  // 矢印キーのスクロール防止
+  if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key)) e.preventDefault();
+});
+window.addEventListener('keyup', e => keys[e.key] = false);
+
+// ── ユーティリティ ──
+function dist(a, b) {
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+function circleCollide(a, ra, b, rb) {
+  const d = dist(a, b);
+  if (d < ra + rb && d > 0) {
+    const nx = (b.x - a.x) / d;
+    const ny = (b.y - a.y) / d;
+    const overlap = ra + rb - d;
+    // 押し出し
+    b.x += nx * overlap * 0.5;
+    b.y += ny * overlap * 0.5;
+    a.x -= nx * overlap * 0.5;
+    a.y -= ny * overlap * 0.5;
+    // 速度交換 (ボール側にキック力)
+    const relVx = b.vx - a.vx;
+    const relVy = b.vy - a.vy;
+    const dot = relVx * nx + relVy * ny;
+    if (dot < 0) {
+      b.vx -= dot * nx;
+      b.vy -= dot * ny;
+      a.vx += dot * nx * 0.3;
+      a.vy += dot * ny * 0.3;
+    }
+  }
+}
+
+function playerBallCollide(p, b) {
+  const d = dist(p, b);
+  if (d < P_R + BALL_R && d > 0) {
+    const nx = (b.x - p.x) / d;
+    const ny = (b.y - p.y) / d;
+    const overlap = P_R + BALL_R - d;
+    b.x += nx * overlap;
+    b.y += ny * overlap;
+    // プレイヤーの速度ベクトルをボールに伝える
+    const speed = Math.hypot(p.vx, p.vy);
+    const kick = Math.max(5, speed * 1.8 + 4);
+    b.vx = nx * kick;
+    b.vy = ny * kick;
+  }
+}
+
+// ── ゲームロジック ──
+function update() {
+  if (gameOver) return;
+
+  // ゴール演出中は動かさない
+  if (goalAnim > 0) {
+    goalAnim--;
+    if (goalAnim === 0) {
+      // ゴール後リセット
+      resetPositions();
+      ball.vx = (goalTeam === 0 ? -1 : 1) * 4; // 食らった側がキックオフ
+      ball.vy = (Math.random() - 0.5) * 3;
+    }
+    return;
+  }
+
+  // ── プレイヤー1 WASD ──
+  p1.vx = 0; p1.vy = 0;
+  if (keys['w'] || keys['W']) p1.vy = -P_SPEED;
+  if (keys['s'] || keys['S']) p1.vy =  P_SPEED;
+  if (keys['a'] || keys['A']) p1.vx = -P_SPEED;
+  if (keys['d'] || keys['D']) p1.vx =  P_SPEED;
+
+  // ── プレイヤー2 矢印 ──
+  p2.vx = 0; p2.vy = 0;
+  if (keys['ArrowUp'])    p2.vy = -P_SPEED;
+  if (keys['ArrowDown'])  p2.vy =  P_SPEED;
+  if (keys['ArrowLeft'])  p2.vx = -P_SPEED;
+  if (keys['ArrowRight']) p2.vx =  P_SPEED;
+
+  // 斜め正規化
+  for (const p of [p1, p2]) {
+    const spd = Math.hypot(p.vx, p.vy);
+    if (spd > P_SPEED) { p.vx = p.vx/spd*P_SPEED; p.vy = p.vy/spd*P_SPEED; }
+    p.x += p.vx;
+    p.y += p.vy;
+    // フィールド内に制限
+    p.x = Math.max(P_R, Math.min(W - P_R, p.x));
+    p.y = Math.max(P_R, Math.min(H - P_R, p.y));
+  }
+
+  // ボール移動
+  ball.x += ball.vx;
+  ball.y += ball.vy;
+  // 摩擦
+  ball.vx *= 0.985;
+  ball.vy *= 0.985;
+
+  // ボール vs 壁
+  if (ball.y - BALL_R < 0)    { ball.y = BALL_R;    ball.vy *= -0.8; }
+  if (ball.y + BALL_R > H)    { ball.y = H - BALL_R; ball.vy *= -0.8; }
+  if (ball.x - BALL_R < 0)    { ball.x = BALL_R;    ball.vx *= -0.8; }
+  if (ball.x + BALL_R > W)    { ball.x = W - BALL_R; ball.vx *= -0.8; }
+
+  // ボール速度クランプ
+  const bspd = Math.hypot(ball.vx, ball.vy);
+  if (bspd > 18) { ball.vx = ball.vx/bspd*18; ball.vy = ball.vy/bspd*18; }
+
+  // プレイヤー vs ボール
+  playerBallCollide(p1, ball);
+  playerBallCollide(p2, ball);
+
+  // プレイヤー同士の衝突
+  circleCollide(p1, P_R, p2, P_R);
+
+  // ゴール判定
+  // 左ゴール (P2が点数)
+  if (ball.x - BALL_R < GOAL_W && ball.y > GOAL_Y && ball.y < GOAL_Y + GOAL_H) {
+    score[1]++;
+    document.getElementById('s2').textContent = score[1];
+    goalTeam = 1;
+    goalAnim = GOAL_PAUSE;
+    if (score[1] >= WIN_SCORE) endGame(1);
+    return;
+  }
+  // 右ゴール (P1が点数)
+  if (ball.x + BALL_R > W - GOAL_W && ball.y > GOAL_Y && ball.y < GOAL_Y + GOAL_H) {
+    score[0]++;
+    document.getElementById('s1').textContent = score[0];
+    goalTeam = 0;
+    goalAnim = GOAL_PAUSE;
+    if (score[0] >= WIN_SCORE) endGame(0);
+    return;
+  }
+}
+
+function endGame(w) {
+  winner = w;
+  gameOver = true;
+  document.getElementById('restart-btn').style.display = 'inline-block';
+}
+
+// ── 描画 ──
+function drawField() {
+  // 芝生
+  ctx.fillStyle = '#2d7a2d';
+  ctx.fillRect(0, 0, W, H);
+
+  // 芝のストライプ
+  for (let i = 0; i < 8; i++) {
+    ctx.fillStyle = i % 2 === 0 ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.03)';
+    ctx.fillRect(i * (W/8), 0, W/8, H);
+  }
+
+  // ライン
+  ctx.strokeStyle = 'rgba(255,255,255,0.8)';
+  ctx.lineWidth = 2;
+
+  // 外枠
+  ctx.strokeRect(1, 1, W-2, H-2);
+
+  // センターライン
+  ctx.beginPath();
+  ctx.moveTo(W/2, 0);
+  ctx.lineTo(W/2, H);
+  ctx.stroke();
+
+  // センターサークル
+  ctx.beginPath();
+  ctx.arc(W/2, H/2, 60, 0, Math.PI*2);
+  ctx.stroke();
+
+  // センタースポット
+  ctx.fillStyle = 'rgba(255,255,255,0.8)';
+  ctx.beginPath();
+  ctx.arc(W/2, H/2, 3, 0, Math.PI*2);
+  ctx.fill();
+
+  // ペナルティエリア (左)
+  ctx.strokeRect(GOAL_W, H/2-90, 80, 180);
+  // ペナルティエリア (右)
+  ctx.strokeRect(W-GOAL_W-80, H/2-90, 80, 180);
+
+  // ゴールポスト (左)
+  ctx.fillStyle = '#eee';
+  ctx.fillRect(0, GOAL_Y, GOAL_W, GOAL_H);
+  ctx.strokeStyle = '#999';
+  ctx.lineWidth = 1.5;
+  ctx.strokeRect(0, GOAL_Y, GOAL_W, GOAL_H);
+
+  // ゴールポスト (右)
+  ctx.fillStyle = '#eee';
+  ctx.fillRect(W - GOAL_W, GOAL_Y, GOAL_W, GOAL_H);
+  ctx.strokeStyle = '#999';
+  ctx.strokeRect(W - GOAL_W, GOAL_Y, GOAL_W, GOAL_H);
+
+  // ゴールネット感 (左)
+  ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+  ctx.lineWidth = 0.5;
+  for (let y = GOAL_Y; y < GOAL_Y + GOAL_H; y += 12) {
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(GOAL_W, y); ctx.stroke();
+  }
+  for (let x = 0; x <= GOAL_W; x += 6) {
+    ctx.beginPath(); ctx.moveTo(x, GOAL_Y); ctx.lineTo(x, GOAL_Y+GOAL_H); ctx.stroke();
+  }
+
+  // ゴールネット感 (右)
+  for (let y = GOAL_Y; y < GOAL_Y + GOAL_H; y += 12) {
+    ctx.beginPath(); ctx.moveTo(W-GOAL_W, y); ctx.lineTo(W, y); ctx.stroke();
+  }
+  for (let x = W-GOAL_W; x <= W; x += 6) {
+    ctx.beginPath(); ctx.moveTo(x, GOAL_Y); ctx.lineTo(x, GOAL_Y+GOAL_H); ctx.stroke();
+  }
+}
+
+function drawPlayer(p, label) {
+  // 影
+  ctx.beginPath();
+  ctx.ellipse(p.x, p.y + P_R - 2, P_R * 0.9, 6, 0, 0, Math.PI*2);
+  ctx.fillStyle = 'rgba(0,0,0,0.3)';
+  ctx.fill();
+
+  // 本体
+  const grad = ctx.createRadialGradient(p.x-5, p.y-5, 2, p.x, p.y, P_R);
+  grad.addColorStop(0, p.color);
+  grad.addColorStop(1, p.shadow);
+  ctx.beginPath();
+  ctx.arc(p.x, p.y, P_R, 0, Math.PI*2);
+  ctx.fillStyle = grad;
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  // ラベル
+  ctx.fillStyle = '#fff';
+  ctx.font = `bold 11px sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(label, p.x, p.y);
+}
+
+function drawBall() {
+  // 影
+  ctx.beginPath();
+  ctx.ellipse(ball.x, ball.y + BALL_R - 2, BALL_R * 0.8, 5, 0, 0, Math.PI*2);
+  ctx.fillStyle = 'rgba(0,0,0,0.3)';
+  ctx.fill();
+
+  // ボール
+  const grad = ctx.createRadialGradient(ball.x-3, ball.y-4, 1, ball.x, ball.y, BALL_R);
+  grad.addColorStop(0, '#ffffff');
+  grad.addColorStop(0.5, '#dddddd');
+  grad.addColorStop(1, '#333333');
+  ctx.beginPath();
+  ctx.arc(ball.x, ball.y, BALL_R, 0, Math.PI*2);
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  // サッカーボール柄（五角形風）
+  ctx.strokeStyle = 'rgba(50,50,50,0.6)';
+  ctx.lineWidth = 1;
+  const angles = [0, 72, 144, 216, 288].map(a => a * Math.PI / 180);
+  for (const a of angles) {
+    ctx.beginPath();
+    ctx.arc(ball.x, ball.y, BALL_R * 0.5, a, a + (72 * Math.PI/180));
+    ctx.stroke();
+  }
+}
+
+function drawGoalAnim() {
+  if (goalAnim <= 0) return;
+  const t = goalAnim / GOAL_PAUSE;
+  const alpha = Math.min(1, t * 2);
+
+  ctx.fillStyle = `rgba(0,0,0,${alpha * 0.4})`;
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.save();
+  const scale = 1 + (1 - t) * 0.5;
+  ctx.translate(W/2, H/2);
+  ctx.scale(scale, scale);
+
+  ctx.font = `bold 80px sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.strokeStyle = goalTeam === 0 ? '#0288d1' : '#c62828';
+  ctx.lineWidth = 6;
+  ctx.strokeText('GOAL! ⚽', 0, 0);
+  ctx.fillStyle = goalTeam === 0 ? '#4fc3f7' : '#ef9a9a';
+  ctx.fillText('GOAL! ⚽', 0, 0);
+
+  ctx.font = `bold 30px sans-serif`;
+  ctx.fillStyle = '#fff';
+  ctx.fillText(`P${goalTeam+1} 得点！`, 0, 70);
+  ctx.restore();
+}
+
+function drawGameOver() {
+  if (!gameOver) return;
+
+  ctx.fillStyle = 'rgba(0,0,0,0.65)';
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  ctx.font = `bold 70px sans-serif`;
+  ctx.fillStyle = winner === 0 ? '#4fc3f7' : '#ef9a9a';
+  ctx.strokeStyle = '#000';
+  ctx.lineWidth = 4;
+  ctx.strokeText(`P${winner+1} 優勝！ 🏆`, W/2, H/2 - 30);
+  ctx.fillText(`P${winner+1} 優勝！ 🏆`, W/2, H/2 - 30);
+
+  ctx.font = `bold 28px sans-serif`;
+  ctx.fillStyle = '#fff';
+  ctx.fillText('SPACEキー または ボタンで再戦', W/2, H/2 + 40);
+}
+
+// ── メインループ ──
+function loop() {
+  update();
+
+  drawField();
+  drawPlayer(p1, 'P1');
+  drawPlayer(p2, 'P2');
+  drawBall();
+
+  if (goalAnim > 0) drawGoalAnim();
+  if (gameOver) drawGameOver();
+
+  requestAnimationFrame(loop);
+}
+
+loop();
+</script>
+</body>
+</html>
